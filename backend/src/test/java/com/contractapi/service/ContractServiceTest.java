@@ -106,6 +106,35 @@ class ContractServiceTest {
   }
 
   @Test
+  void withdrawnContractCannotBeReopenedToAnyStatus() throws Exception {
+    Contract contract = pendingContract(1001L);
+    service.withdraw(contract.getId(), 1001L);
+
+    for (ContractStatus target : ContractStatus.values()) {
+      if (target == ContractStatus.WITHDRAWN) {
+        continue; // 撤回只能经撤回接口，另有测试覆盖
+      }
+      ApiException ex = assertThrows(ApiException.class,
+          () -> service.updateStatus(contract.getId(), target),
+          "撤回合同不应能变更为 " + target);
+      assertEquals("CONTRACT_WITHDRAWN", ex.getCode());
+      assertEquals(ContractStatus.WITHDRAWN.name(), contract.getStatus(),
+          "失败请求不得改动状态（尝试变更为 " + target + "）");
+    }
+  }
+
+  @Test
+  void normalFlowsStillWork() {
+    Contract contract = createContract(1001L);
+
+    service.updateStatus(contract.getId(), ContractStatus.PENDING_SIGN);
+    assertEquals(ContractStatus.PENDING_SIGN.name(), contract.getStatus());
+
+    service.updateStatus(contract.getId(), ContractStatus.SIGNED);
+    assertEquals(ContractStatus.SIGNED.name(), contract.getStatus());
+  }
+
+  @Test
   void withdrawMissingContractThrowsNotFound() {
     ApiException ex = assertThrows(ApiException.class,
         () -> service.withdraw(999999L, 1001L));

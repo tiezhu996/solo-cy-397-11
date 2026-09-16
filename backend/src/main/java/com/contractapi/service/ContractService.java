@@ -51,13 +51,15 @@ public class ContractService {
     }
     Contract contract = find(id);
     synchronized (lockOf(id)) {
-      // 已撤回是终态：即使签署请求晚到，也不得覆盖
+      String current = contract.getStatus();
+      if (ContractStatus.WITHDRAWN.name().equals(current)) {
+        // 撤回是终态：禁止通过通用状态更新重新打开（改回草稿/待签/重新签署/过期等一律失败）
+        throw new ApiException(ErrorCode.CONTRACT_WITHDRAWN, "合同已撤回，不能变更状态");
+      }
+      // 签署只能发生在待签署状态；签署与撤回竞争时，若撤回先生效，上面已直接拒绝
       if (status == ContractStatus.SIGNED
-          && !ContractStatus.PENDING_SIGN.name().equals(contract.getStatus())) {
-        if (ContractStatus.WITHDRAWN.name().equals(contract.getStatus())) {
-          throw new ApiException(ErrorCode.CONTRACT_WITHDRAWN, "合同已撤回，不能再签署");
-        }
-        throw new ApiException(ErrorCode.VALIDATION_FAILED, "当前状态不能签署，合同状态：" + contract.getStatus());
+          && !ContractStatus.PENDING_SIGN.name().equals(current)) {
+        throw new ApiException(ErrorCode.VALIDATION_FAILED, "当前状态不能签署，合同状态：" + current);
       }
       contract.setStatus(status.name());
       return contract;
