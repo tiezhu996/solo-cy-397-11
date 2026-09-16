@@ -7,5 +7,6 @@ public final class ErrorCode {
   public static final String FORBIDDEN = "FORBIDDEN";
   public static final String CONTRACT_NOT_PENDING_SIGN = "CONTRACT_NOT_PENDING_SIGN";
   public static final String CONTRACT_WITHDRAWN = "CONTRACT_WITHDRAWN";
+  public static final String CONTRACT_INVALID_TRANSITION = "CONTRACT_INVALID_TRANSITION";
   private ErrorCode() {}
 }

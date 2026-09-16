@@ -135,6 +135,55 @@ class ContractServiceTest {
   }
 
   @Test
+  void expireTransitionsAreAllowed() {
+    Contract pending = createContract(1001L);
+    service.updateStatus(pending.getId(), ContractStatus.PENDING_SIGN);
+    service.updateStatus(pending.getId(), ContractStatus.EXPIRED);
+    assertEquals(ContractStatus.EXPIRED.name(), pending.getStatus());
+
+    Contract signed = createContract(1001L);
+    service.updateStatus(signed.getId(), ContractStatus.PENDING_SIGN);
+    service.updateStatus(signed.getId(), ContractStatus.SIGNED);
+    service.updateStatus(signed.getId(), ContractStatus.EXPIRED);
+    assertEquals(ContractStatus.EXPIRED.name(), signed.getStatus());
+  }
+
+  @Test
+  void illegalRollbacksAndSkipsAreRejectedWithoutStateChange() {
+    record Case(long id, ContractStatus from, ContractStatus to) {}
+    java.util.List<Case> cases = new java.util.ArrayList<>();
+
+    Contract draft = createContract(1001L);
+    cases.add(new Case(draft.getId(), ContractStatus.DRAFT, ContractStatus.SIGNED));
+    cases.add(new Case(draft.getId(), ContractStatus.DRAFT, ContractStatus.EXPIRED));
+
+    Contract signed = createContract(1001L);
+    service.updateStatus(signed.getId(), ContractStatus.PENDING_SIGN);
+    service.updateStatus(signed.getId(), ContractStatus.SIGNED);
+    cases.add(new Case(signed.getId(), ContractStatus.SIGNED, ContractStatus.DRAFT));
+    cases.add(new Case(signed.getId(), ContractStatus.SIGNED, ContractStatus.PENDING_SIGN));
+    cases.add(new Case(signed.getId(), ContractStatus.SIGNED, ContractStatus.SIGNED));
+
+    Contract expiredFromPending = createContract(1001L);
+    service.updateStatus(expiredFromPending.getId(), ContractStatus.PENDING_SIGN);
+    service.updateStatus(expiredFromPending.getId(), ContractStatus.EXPIRED);
+    cases.add(new Case(expiredFromPending.getId(), ContractStatus.EXPIRED, ContractStatus.DRAFT));
+    cases.add(new Case(expiredFromPending.getId(), ContractStatus.EXPIRED, ContractStatus.PENDING_SIGN));
+    cases.add(new Case(expiredFromPending.getId(), ContractStatus.EXPIRED, ContractStatus.SIGNED));
+
+    for (Case c : cases) {
+      ApiException ex = assertThrows(ApiException.class,
+          () -> service.updateStatus(c.id(), c.to()),
+          c.from() + " 不应能变更为 " + c.to());
+      assertEquals("CONTRACT_INVALID_TRANSITION", ex.getCode());
+      Contract latest = service.list(null, null).stream()
+          .filter(item -> item.getId().equals(c.id())).findFirst().orElseThrow();
+      assertEquals(c.from().name(), latest.getStatus(),
+          "失败请求不得改动状态（" + c.from() + " -> " + c.to() + "）");
+    }
+  }
+
+  @Test
   void withdrawMissingContractThrowsNotFound() {
     ApiException ex = assertThrows(ApiException.class,
         () -> service.withdraw(999999L, 1001L));
@@ -156,8 +205,6 @@ class ContractServiceTest {
     int rounds = 20;
     Long[] ids = new Long[rounds];
     for (int i = 0; i < rounds; i++) {
-      // generate 以毫秒时间戳为 ID，等待 2ms 保证每份合同 ID 唯一
-      Thread.sleep(2);
       ids[i] = pendingContract(1001L).getId();
     }
 

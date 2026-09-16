@@ -4,6 +4,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicLong;
 import com.contractapi.constants.ContractStatus;
 import com.contractapi.constants.ErrorCode;
 import com.contractapi.dto.GenerateContractRequest;
@@ -24,6 +25,8 @@ public class ContractService {
   private final List<Contract> contracts = new CopyOnWriteArrayList<>();
   // 每份合同一把锁，保证签署与撤回的状态变更串行化
   private final Map<Long, Object> contractLocks = new ConcurrentHashMap<>();
+  // 毫秒基准上的原子递增，避免同一毫秒内生成多份合同时 ID 碰撞
+  private final AtomicLong idSequence = new AtomicLong(System.currentTimeMillis());
 
   public ContractService(TemplateService templateService, TemplateRenderer renderer) {
     this.templateService = templateService;
@@ -33,7 +36,7 @@ public class ContractService {
   public Contract generate(GenerateContractRequest request) {
     ContractTemplate template = templateService.find(request.templateId());
     Contract contract = new Contract();
-    contract.setId(System.currentTimeMillis());
+    contract.setId(idSequence.incrementAndGet());
     contract.setUserId(request.userId());
     contract.setTemplateId(template.getId());
     contract.setTitle(request.title());
@@ -51,15 +54,15 @@ public class ContractService {
     }
     Contract contract = find(id);
     synchronized (lockOf(id)) {
-      String current = contract.getStatus();
-      if (ContractStatus.WITHDRAWN.name().equals(current)) {
-        // 撤回是终态：禁止通过通用状态更新重新打开（改回草稿/待签/重新签署/过期等一律失败）
+      ContractStatus current = ContractStatus.valueOf(contract.getStatus());
+      if (current == ContractStatus.WITHDRAWN) {
+        // 撤回是终态：禁止通过通用状态更新重新打开或变更
         throw new ApiException(ErrorCode.CONTRACT_WITHDRAWN, "合同已撤回，不能变更状态");
       }
-      // 签署只能发生在待签署状态；签署与撤回竞争时，若撤回先生效，上面已直接拒绝
-      if (status == ContractStatus.SIGNED
-          && !ContractStatus.PENDING_SIGN.name().equals(current)) {
-        throw new ApiException(ErrorCode.VALIDATION_FAILED, "当前状态不能签署，合同状态：" + current);
+      if (!current.canTransitionTo(status)) {
+        // 非法回退或跳跃一律拒绝，且不改动当前状态
+        throw new ApiException(ErrorCode.CONTRACT_INVALID_TRANSITION,
+            "合同状态不能从 " + current + " 变更为 " + status);
       }
       contract.setStatus(status.name());
       return contract;
