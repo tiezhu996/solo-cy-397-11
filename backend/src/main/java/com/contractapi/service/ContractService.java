@@ -1,19 +1,29 @@
 package com.contractapi.service;
 
-import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 import com.contractapi.constants.ContractStatus;
+import com.contractapi.constants.ErrorCode;
 import com.contractapi.dto.GenerateContractRequest;
 import com.contractapi.entity.Contract;
 import com.contractapi.entity.ContractTemplate;
+import com.contractapi.exception.ApiException;
 import com.contractapi.utils.TemplateRenderer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 @Service
 public class ContractService {
+  private static final Logger log = LoggerFactory.getLogger(ContractService.class);
+
   private final TemplateService templateService;
   private final TemplateRenderer renderer;
-  private final List<Contract> contracts = new ArrayList<>();
+  private final List<Contract> contracts = new CopyOnWriteArrayList<>();
+  // 每份合同一把锁，保证签署与撤回的状态变更串行化
+  private final Map<Long, Object> contractLocks = new ConcurrentHashMap<>();
 
   public ContractService(TemplateService templateService, TemplateRenderer renderer) {
     this.templateService = templateService;
@@ -35,9 +45,47 @@ public class ContractService {
   }
 
   public Contract updateStatus(Long id, ContractStatus status) {
-    Contract contract = contracts.stream().filter(item -> item.getId().equals(id)).findFirst().orElseThrow();
-    contract.setStatus(status.name());
-    return contract;
+    if (status == ContractStatus.WITHDRAWN) {
+      // 撤回只能通过专门的撤回接口，由创建人发起
+      throw new ApiException(ErrorCode.VALIDATION_FAILED, "请使用撤回接口撤回待签合同");
+    }
+    Contract contract = find(id);
+    synchronized (lockOf(id)) {
+      // 已撤回是终态：即使签署请求晚到，也不得覆盖
+      if (status == ContractStatus.SIGNED
+          && !ContractStatus.PENDING_SIGN.name().equals(contract.getStatus())) {
+        if (ContractStatus.WITHDRAWN.name().equals(contract.getStatus())) {
+          throw new ApiException(ErrorCode.CONTRACT_WITHDRAWN, "合同已撤回，不能再签署");
+        }
+        throw new ApiException(ErrorCode.VALIDATION_FAILED, "当前状态不能签署，合同状态：" + contract.getStatus());
+      }
+      contract.setStatus(status.name());
+      return contract;
+    }
+  }
+
+  /**
+   * 撤回待签合同。只有创建人可撤回；重复撤回幂等返回同一份合同；
+   * 草稿/已签署/已过期均不能撤回。
+   */
+  public Contract withdraw(Long id, Long operatorUserId) {
+    Contract contract = find(id);
+    synchronized (lockOf(id)) {
+      if (!contract.getUserId().equals(operatorUserId)) {
+        throw new ApiException(ErrorCode.FORBIDDEN, "只有合同创建人可以撤回合同");
+      }
+      String current = contract.getStatus();
+      if (ContractStatus.WITHDRAWN.name().equals(current)) {
+        // 幂等：重复撤回返回同一结果，正文保持不变
+        return contract;
+      }
+      if (!ContractStatus.PENDING_SIGN.name().equals(current)) {
+        throw new ApiException(ErrorCode.CONTRACT_NOT_PENDING_SIGN, "只有待签署合同可以撤回，当前状态：" + current);
+      }
+      contract.setStatus(ContractStatus.WITHDRAWN.name());
+      log.info("合同 {} 已被创建人 {} 撤回，正文保留且不可再签署", id, operatorUserId);
+      return contract;
+    }
   }
 
   public List<Contract> list(Long userId, String status) {
@@ -46,5 +94,14 @@ public class ContractService {
 
   public String exportPdf(Long id) {
     return "wkhtmltopdf 已在 Docker 镜像安装，合同 " + id + " 可导出到 /tmp/contracts/" + id + ".pdf";
+  }
+
+  private Contract find(Long id) {
+    return contracts.stream().filter(item -> item.getId().equals(id)).findFirst()
+        .orElseThrow(() -> new ApiException(ErrorCode.NOT_FOUND, "合同不存在：" + id));
+  }
+
+  private Object lockOf(Long id) {
+    return contractLocks.computeIfAbsent(id, key -> new Object());
   }
 }

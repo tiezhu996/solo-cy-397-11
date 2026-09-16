@@ -11,7 +11,7 @@ docker compose up -d --build
 
 - 管理租赁、劳动、借款、合作、保密协议模板与占位变量。
 - 根据变量生成纯文本/HTML 合同，并预留 wkhtmltopdf 导出 PDF。
-- 合同状态支持草稿、待签署、已签署、已过期。
+- 合同状态支持草稿、待签署、已签署、已过期；待签合同可由创建人撤回，撤回后正文保留但不可再签署。
 - 法律工单提交、分配、回复和关闭。
 - 法律 FAQ 分类维护与关键词搜索。
 - 用户合同库与模板收藏。
@@ -51,6 +51,7 @@ mvn spring-boot:run
 - `POST /api/templates` 新增模板
 - `POST /api/contracts/generate` 合同生成
 - `PATCH /api/contracts/{id}/status` 更新签署状态
+- `POST /api/contracts/{id}/withdraw?userId=创建人ID` 撤回待签合同（仅创建人，重复撤回幂等）
 - `GET /api/contracts` 用户合同库
 - `POST /api/tickets` 提交法律工单
 - `POST /api/tickets/{id}/replies` 添加工单回复
